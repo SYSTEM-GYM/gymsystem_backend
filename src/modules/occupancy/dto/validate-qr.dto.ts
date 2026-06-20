@@ -1,10 +1,17 @@
-import { IsIn, IsString, MinLength } from 'class-validator';
+import { IsUUID, IsString, MinLength } from 'class-validator';
 
+/**
+ * Payload sent by the Local Edge Service after a USB QR scan.
+ *
+ * MVP simplification: qr_code is the raw user UUID stored in the QR.
+ * Production upgrade path: replace with a signed HMAC token
+ * (<base64_payload>.<base64_signature>) and verify in the service.
+ */
 export class ValidateQrDto {
-  @IsString()
-  @MinLength(10)
-  qr_hash: string;
+  @IsUUID(4, { message: 'qr_code deve ser um UUID válido' })
+  qr_code: string;
 
-  @IsIn(['entry', 'exit'])
-  event_type: 'entry' | 'exit';
+  @IsString()
+  @MinLength(1)
+  gym_id: string;
 }

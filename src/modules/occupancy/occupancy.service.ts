@@ -1,19 +1,24 @@
-import { createHmac, timingSafeEqual } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/supabase.provider';
 import { ValidateQrDto } from './dto/validate-qr.dto';
 
-const QR_VALIDITY_SECONDS = 10;
+// ── Response types ────────────────────────────────────────────────────────────
 
-type QrTokenPayload = {
-  uid: string;
-  iat: number; // Unix seconds
+export type QrGranted  = { granted: true;  member_name: string };
+export type QrDenied   = { granted: false; reason: string };
+export type QrResult   = QrGranted | QrDenied;
+
+// ── User row shape returned by the DB query ───────────────────────────────────
+
+type UserRow = {
+  id: string;
+  first_name: string | null;
+  full_name: string | null;
+  status: string;
+  home_gym_id: string | null;
+  global_access: boolean;
 };
-
-type ValidationResult =
-  | { success: true; userId: string; eventType: 'entry' | 'exit' }
-  | { success: false; reason: 'invalid_format' | 'invalid_signature' | 'expired_qr' | 'inactive_user' | 'internal_error' };
 
 @Injectable()
 export class OccupancyService {
@@ -23,88 +28,77 @@ export class OccupancyService {
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
   ) {}
 
-  async validateQr(dto: ValidateQrDto): Promise<ValidationResult> {
-    const secret = process.env.HMAC_QR_SECRET;
-    if (!secret) {
-      this.logger.error('HMAC_QR_SECRET is not configured');
-      return { success: false, reason: 'internal_error' };
-    }
+  /**
+   * Validates a QR code scanned by the Local Edge Service.
+   *
+   * MVP: qr_code is the raw user UUID. The upgrade path is to replace this
+   * with a time-limited HMAC token signed server-side on the mobile app.
+   *
+   * Business rules (evaluated in order, fail fast):
+   *   1. User must exist in public.users.
+   *   2. User status must be 'active'.
+   *   3. User's home_gym_id must equal gymId, OR global_access must be true.
+   *
+   * On success, an occupancy_log row is inserted and the response is returned
+   * to the edge service so it can fire the turnstile TCP command.
+   */
+  async validateQrCode(dto: ValidateQrDto): Promise<QrResult> {
+    const { qr_code: userId, gym_id: gymId } = dto;
 
-    // Step 1: Parse token format <base64url_payload>.<base64url_signature>
-    const parts = dto.qr_hash.split('.');
-    if (parts.length !== 2) {
-      return { success: false, reason: 'invalid_format' };
-    }
-    const [encodedPayload, receivedSignature] = parts;
-
-    // Step 2: Verify HMAC signature using timing-safe comparison
-    const expectedSignature = createHmac('sha256', secret)
-      .update(encodedPayload)
-      .digest('base64url');
-
-    const signaturesMatch = timingSafeEqual(
-      Buffer.from(receivedSignature, 'base64url'),
-      Buffer.from(expectedSignature, 'base64url'),
-    );
-
-    if (!signaturesMatch) {
-      return { success: false, reason: 'invalid_signature' };
-    }
-
-    // Step 3: Decode payload and verify timestamp window
-    let payload: QrTokenPayload;
-    try {
-      const json = Buffer.from(encodedPayload, 'base64url').toString('utf8');
-      payload = JSON.parse(json) as QrTokenPayload;
-    } catch {
-      return { success: false, reason: 'invalid_format' };
-    }
-
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const ageSeconds = nowSeconds - payload.iat;
-
-    if (ageSeconds < 0 || ageSeconds > QR_VALIDITY_SECONDS) {
-      return { success: false, reason: 'expired_qr' };
-    }
-
-    // Step 4: Check user status in Supabase (service_role bypasses RLS)
-    const { data: userRow, error } = await this.supabase
+    // ── Check 1: User exists ──────────────────────────────────────────────────
+    const { data: user, error: fetchError } = await this.supabase
       .from('users')
-      .select('status')
-      .eq('id', payload.uid)
-      .single();
+      .select('id, first_name, full_name, status, home_gym_id, global_access')
+      .eq('id', userId)
+      .single<UserRow>();
 
-    if (error || !userRow) {
-      this.logger.warn(`User lookup failed for uid=${payload.uid}: ${error?.message}`);
-      return { success: false, reason: 'inactive_user' };
+    if (fetchError || !user) {
+      this.logger.warn(`QR validation — user not found: ${userId}`);
+      return { granted: false, reason: 'Usuário não encontrado' };
     }
 
-    if (userRow.status !== 'active') {
-      return { success: false, reason: 'inactive_user' };
+    // ── Check 2: Active status ────────────────────────────────────────────────
+    if (user.status !== 'active') {
+      this.logger.warn(`QR validation — inactive user: ${userId} (status=${user.status})`);
+      const statusReasons: Record<string, string> = {
+        inactive: 'Plano Inativo / Inadimplente',
+        banned:   'Acesso Bloqueado por Suspensão',
+      };
+      return {
+        granted: false,
+        reason: statusReasons[user.status] ?? 'Plano Inativo / Inadimplente',
+      };
     }
 
-    // Step 5: Insert occupancy log (async cloud sync from edge)
-    // TODO(multi-tenant): ValidateQrDto should carry gym_id from the local edge device
-    // so logs are scoped to the correct branch. For now gym_id is null.
+    // ── Check 3: Multi-tenant gym access ──────────────────────────────────────
+    const hasGymAccess = user.global_access || user.home_gym_id === gymId;
+    if (!hasGymAccess) {
+      this.logger.warn(
+        `QR validation — wrong gym: userId=${userId} homeGym=${user.home_gym_id} requestedGym=${gymId}`,
+      );
+      return { granted: false, reason: 'Acesso restrito à filial de origem' };
+    }
+
+    // ── All checks passed: log the entry ──────────────────────────────────────
     const { error: insertError } = await this.supabase
       .from('occupancy_logs')
       .insert({
-        user_id: payload.uid,
-        gym_id: null, // TODO: populate from dto.gym_id once edge service sends it
-        event_type: dto.event_type,
-        qr_hash: dto.qr_hash,
-        validated_at: new Date().toISOString(),
+        user_id:      userId,
+        gym_id:       gymId,
+        entered_at:   new Date().toISOString(),
+        // exited_at intentionally null — populated when the member leaves
       });
 
     if (insertError) {
-      this.logger.error(`Failed to insert occupancy log: ${insertError.message}`);
-      return { success: false, reason: 'internal_error' };
+      // Log the error but do NOT deny access — the member was validly authenticated.
+      // A logging failure must never block a paying customer at the door.
+      this.logger.error(`Failed to insert occupancy log for user ${userId}: ${insertError.message}`);
     }
 
-    return {
-      success: true,
-      userId: payload.uid,
-      eventType: dto.event_type,
-    };
+    const memberName = user.first_name ?? user.full_name?.split(' ')[0] ?? 'Membro';
+
+    this.logger.log(`QR validation — GRANTED: ${memberName} (${userId}) at gym ${gymId}`);
+
+    return { granted: true, member_name: memberName };
   }
 }

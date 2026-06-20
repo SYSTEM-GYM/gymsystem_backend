@@ -1,6 +1,15 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { OccupancyService } from './occupancy.service';
 import { ValidateQrDto } from './dto/validate-qr.dto';
+import { EdgeApiKeyGuard } from '../../shared/guards/edge-api-key.guard';
 
 @Controller('occupancy')
 export class OccupancyController {
@@ -13,35 +22,24 @@ export class OccupancyController {
 
   /**
    * POST /api/occupancy/validate-qr
-   * Called by the Local Edge Service after capturing a QR scan.
-   * Validates the HMAC token, checks user status, and persists the access log.
+   *
+   * Machine-to-machine endpoint called by the Local Edge Service (gym_edge)
+   * after reading a QR code from the physical USB scanner.
+   *
+   * Auth: EdgeApiKeyGuard — requires X-Edge-Api-Key header matching EDGE_API_KEY
+   * env var. No Supabase JWT needed — the edge daemon is not a human session.
+   *
+   * Returns the `granted` shape consumed by gym_edge/index.js:
+   *   { granted: true,  member_name: string }
+   *   { granted: false, reason: string }
+   *
+   * HTTP status is always 200 so the edge service can read the body uniformly.
+   * A 4xx would only occur for invalid DTO or missing API key.
    */
   @Post('validate-qr')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(EdgeApiKeyGuard)
   async validateQr(@Body() dto: ValidateQrDto) {
-    const result = await this.occupancyService.validateQr(dto);
-
-    if (!result.success) {
-      return {
-        success: false,
-        reason: result.reason,
-        message: FAILURE_MESSAGES[result.reason],
-      };
-    }
-
-    return {
-      success: true,
-      userId: result.userId,
-      eventType: result.eventType,
-      message: result.eventType === 'entry' ? 'Entrada registrada' : 'Saída registrada',
-    };
+    return this.occupancyService.validateQrCode(dto);
   }
 }
-
-const FAILURE_MESSAGES: Record<string, string> = {
-  invalid_format: 'Formato de QR inválido',
-  invalid_signature: 'Assinatura inválida',
-  expired_qr: 'QR expirado',
-  inactive_user: 'Usuário inativo ou bloqueado',
-  internal_error: 'Erro interno do servidor',
-};
