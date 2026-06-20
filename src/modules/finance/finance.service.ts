@@ -43,10 +43,12 @@ export class FinanceService {
     }
 
     // Insert the income transaction
+    // TODO(multi-tenant): resolve gym_id from userRow.home_gym_id and pass it here
     const { data: transaction, error: insertError } = await this.supabase
       .from('financial_transactions')
       .insert({
         user_id: userId,
+        gym_id: null, // populated once webhook DTO carries gym context
         amount,
         type: 'income',
         category,

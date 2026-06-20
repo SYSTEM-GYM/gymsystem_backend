@@ -70,13 +70,12 @@ export class FinanceCronService {
         continue;
       }
 
+      // TODO(multi-tenant): recurring_expenses should carry a gym_id so the cron
+      // can fan-out per gym. For now gym_id is null (affects all gyms equally).
       const { error: insertError } = await this.supabase
         .from('financial_transactions')
         .insert({
-          // recurring expenses are not tied to a specific member — use a sentinel approach:
-          // we store the template id in reference_id if needed; user_id requires a valid UUID.
-          // For now we insert with the first admin user; a system UUID column would be cleaner
-          // and can be addressed in a future migration.
+          gym_id: null, // TODO: derive from recurring_expenses.gym_id once column exists
           type: 'expense',
           status: 'pending',
           amount: template.amount,

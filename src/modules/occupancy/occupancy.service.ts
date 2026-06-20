@@ -84,10 +84,13 @@ export class OccupancyService {
     }
 
     // Step 5: Insert occupancy log (async cloud sync from edge)
+    // TODO(multi-tenant): ValidateQrDto should carry gym_id from the local edge device
+    // so logs are scoped to the correct branch. For now gym_id is null.
     const { error: insertError } = await this.supabase
       .from('occupancy_logs')
       .insert({
         user_id: payload.uid,
+        gym_id: null, // TODO: populate from dto.gym_id once edge service sends it
         event_type: dto.event_type,
         qr_hash: dto.qr_hash,
         validated_at: new Date().toISOString(),
