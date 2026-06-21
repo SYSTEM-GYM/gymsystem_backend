@@ -7,6 +7,8 @@ export type WebhookProcessResult =
   | { success: true; transactionId: string }
   | { success: false; reason: 'user_not_found' | 'db_error' | 'payment_failed' };
 
+type UserRow = { id: string; status: string; home_gym_id: string | null };
+
 @Injectable()
 export class FinanceService {
   private readonly logger = new Logger(FinanceService.name);
@@ -18,7 +20,6 @@ export class FinanceService {
   async processPaymentWebhook(dto: PaymentWebhookDto): Promise<WebhookProcessResult> {
     const { external_reference: userId, amount, payment_method, status, category } = dto;
 
-    // Short-circuit on failed payments — log and return early
     if (status === 'failed') {
       this.logger.warn(
         `Payment failed: userId=${userId} category=${category} method=${payment_method} amount=${amount}`,
@@ -30,25 +31,24 @@ export class FinanceService {
       `Processing paid webhook: userId=${userId} category=${category} method=${payment_method} amount=${amount}`,
     );
 
-    // Verify the user exists before inserting (prevents orphaned transactions)
     const { data: userRow, error: userError } = await this.supabase
       .from('users')
-      .select('id, status')
+      .select('id, status, home_gym_id')
       .eq('id', userId)
-      .single();
+      .single<UserRow>();
 
     if (userError || !userRow) {
-      this.logger.error(`User not found for webhook: userId=${userId} — ${userError?.message ?? 'no row'}`);
+      this.logger.error(
+        `User not found for webhook: userId=${userId} — ${userError?.message ?? 'no row'}`,
+      );
       return { success: false, reason: 'user_not_found' };
     }
 
-    // Insert the income transaction
-    // TODO(multi-tenant): resolve gym_id from userRow.home_gym_id and pass it here
     const { data: transaction, error: insertError } = await this.supabase
       .from('financial_transactions')
       .insert({
         user_id: userId,
-        gym_id: null, // populated once webhook DTO carries gym context
+        gym_id: userRow.home_gym_id,
         amount,
         type: 'income',
         category,
@@ -60,13 +60,14 @@ export class FinanceService {
       .single();
 
     if (insertError || !transaction) {
-      this.logger.error(`Failed to insert transaction for userId=${userId}: ${insertError?.message}`);
+      this.logger.error(
+        `Failed to insert transaction for userId=${userId}: ${insertError?.message}`,
+      );
       return { success: false, reason: 'db_error' };
     }
 
     this.logger.log(`Transaction saved: id=${transaction.id} userId=${userId}`);
 
-    // Critical side effect: paid subscription → activate user (unlocks turnstile)
     if (category === 'subscription') {
       const { error: activateError } = await this.supabase
         .from('users')
@@ -74,8 +75,6 @@ export class FinanceService {
         .eq('id', userId);
 
       if (activateError) {
-        // Transaction already committed — log but don't block the webhook response.
-        // Admin can manually re-activate if the sync drifts.
         this.logger.error(
           `Transaction saved but failed to activate user=${userId}: ${activateError.message}`,
         );

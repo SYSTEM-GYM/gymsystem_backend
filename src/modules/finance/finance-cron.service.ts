@@ -10,6 +10,7 @@ type RecurringExpense = {
   amount: number;
   category: string;
   day_of_month: number;
+  gym_id: string | null;
 };
 
 @Injectable()
@@ -31,7 +32,7 @@ export class FinanceCronService {
     // Fetch active templates scheduled for today
     const { data: templates, error: fetchError } = await this.supabase
       .from('recurring_expenses')
-      .select('id, name, description, amount, category, day_of_month')
+      .select('id, name, description, amount, category, day_of_month, gym_id')
       .eq('is_active', true)
       .eq('day_of_month', dayOfMonth)
       .returns<RecurringExpense[]>();
@@ -70,12 +71,10 @@ export class FinanceCronService {
         continue;
       }
 
-      // TODO(multi-tenant): recurring_expenses should carry a gym_id so the cron
-      // can fan-out per gym. For now gym_id is null (affects all gyms equally).
       const { error: insertError } = await this.supabase
         .from('financial_transactions')
         .insert({
-          gym_id: null, // TODO: derive from recurring_expenses.gym_id once column exists
+          gym_id: template.gym_id,
           type: 'expense',
           status: 'pending',
           amount: template.amount,

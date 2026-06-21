@@ -1,15 +1,20 @@
 import {
   CanActivate,
   ExecutionContext,
+  Inject,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { SUPABASE_CLIENT } from '../database/supabase.provider';
 
-// Validates Supabase short-lived JWT on every protected route.
-// Full implementation goes here when the auth module is wired.
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
+  constructor(
+    @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authHeader: string | undefined = request.headers['authorization'];
 
@@ -17,7 +22,17 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
-    // TODO: verify JWT signature against Supabase JWKS
+    const token = authHeader.slice(7);
+    const {
+      data: { user },
+      error,
+    } = await this.supabase.auth.getUser(token);
+
+    if (error || !user) {
+      throw new UnauthorizedException();
+    }
+
+    request.user = user;
     return true;
   }
 }
