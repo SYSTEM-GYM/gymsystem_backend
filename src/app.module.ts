@@ -9,6 +9,8 @@ import { EcommModule } from './modules/ecomm/ecomm.module';
 import { BiometricsModule } from './modules/biometrics/biometrics.module';
 import { OccupancyModule } from './modules/occupancy/occupancy.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
+import { AccessModule } from './modules/access/access.module';
+import { StripeModule } from './modules/stripe/stripe.module';
 
 @Module({
   imports: [
@@ -22,7 +24,8 @@ import { GamificationModule } from './modules/gamification/gamification.module';
     BiometricsModule,
     OccupancyModule,
     GamificationModule,
-    
+    AccessModule,
+    StripeModule,
   ],
 })
 export class AppModule {}
