@@ -27,8 +27,9 @@ CREATE TABLE IF NOT EXISTS public.wa_messages (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS wa_messages_wa_id_unique
+  ON public.wa_messages(wa_message_id) WHERE wa_message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS wa_messages_contact_idx  ON public.wa_messages(contact_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS wa_messages_wa_id_idx    ON public.wa_messages(wa_message_id) WHERE wa_message_id IS NOT NULL;
 
 -- Templates: reusable message templates (maps to WA Business approved templates)
 CREATE TABLE IF NOT EXISTS public.wa_templates (
@@ -61,11 +62,25 @@ INSERT INTO public.wa_automations (trigger_type, active) VALUES
   ('overdue',    false)
 ON CONFLICT (trigger_type) DO NOTHING;
 
+-- Integration credentials (one row per gym owner / admin)
+CREATE TABLE IF NOT EXISTS public.wa_integration (
+  id                    UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id              UUID         NOT NULL REFERENCES public.users(id) ON DELETE CASCADE UNIQUE,
+  phone_number_id       VARCHAR(50),
+  business_account_id   VARCHAR(50),
+  api_token             TEXT,
+  webhook_secret        VARCHAR(100),
+  display_phone         VARCHAR(30),
+  connected_at          TIMESTAMPTZ,
+  updated_at            TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
 -- ── RLS ──────────────────────────────────────────────────────────────────────
 ALTER TABLE public.wa_contacts   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wa_messages   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wa_templates  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.wa_automations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.wa_integration ENABLE ROW LEVEL SECURITY;
 
 -- Admins have full access
 CREATE POLICY "wa_contacts_admin_all"
@@ -85,6 +100,11 @@ CREATE POLICY "wa_templates_admin_all"
 
 CREATE POLICY "wa_automations_admin_all"
   ON public.wa_automations FOR ALL
+  USING   (public.current_user_role() = 'admin')
+  WITH CHECK (public.current_user_role() = 'admin');
+
+CREATE POLICY "wa_integration_admin_all"
+  ON public.wa_integration FOR ALL
   USING   (public.current_user_role() = 'admin')
   WITH CHECK (public.current_user_role() = 'admin');
 

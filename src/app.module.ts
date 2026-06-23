@@ -11,6 +11,7 @@ import { OccupancyModule } from './modules/occupancy/occupancy.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { AccessModule } from './modules/access/access.module';
 import { StripeModule } from './modules/stripe/stripe.module';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { StripeModule } from './modules/stripe/stripe.module';
     GamificationModule,
     AccessModule,
     StripeModule,
+    WhatsappModule,
   ],
 })
 export class AppModule {}
