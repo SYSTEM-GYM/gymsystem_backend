@@ -1,6 +1,13 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/supabase.provider';
+import { TenantContextService } from '../../shared/context/tenant-context.service';
+
+export type GymWorkoutCollectionSummary = {
+  id: string;
+  name: string;
+  estimatedDurationMinutes: number;
+};
 
 export type CollectionExercise = {
   id: string;
@@ -32,7 +39,39 @@ export class WorkoutsService {
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly tenantContext: TenantContextService,
   ) {}
+
+  /**
+   * Proof of concept for TenantContextService: gym_id comes from the
+   * AsyncLocalStorage-scoped request context (populated from the JWT's
+   * app_metadata claims) instead of being passed in by the controller.
+   */
+  async findAllCollectionsForCurrentGym(): Promise<
+    GymWorkoutCollectionSummary[]
+  > {
+    const gymId = this.tenantContext.getGymId();
+    if (!gymId) return [];
+
+    const { data, error } = await this.supabase
+      .from('exercise_collections')
+      .select('id, name, estimated_duration_minutes')
+      .eq('gym_id', gymId)
+      .order('name', { ascending: true });
+
+    if (error) {
+      this.logger.warn(
+        `findAllCollectionsForCurrentGym failed: ${error.message}`,
+      );
+      return [];
+    }
+
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      name: row.name as string,
+      estimatedDurationMinutes: row.estimated_duration_minutes as number,
+    }));
+  }
 
   async getTodayWorkout(userId: string): Promise<TodayWorkout | null> {
     const dayOfWeek = new Date().getDay();
@@ -109,7 +148,9 @@ export class WorkoutsService {
 
     const exercises = (rows ?? [])
       .map((r) => {
-        const raw = r.exercise as CollectionExercise['exercise'] | CollectionExercise['exercise'][];
+        const raw = r.exercise as
+          | CollectionExercise['exercise']
+          | CollectionExercise['exercise'][];
         const ex = Array.isArray(raw) ? raw[0] : raw;
         if (!ex) return null;
         return {
