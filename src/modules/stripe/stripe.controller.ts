@@ -36,8 +36,12 @@ export class StripeController {
     const rawBody = req.rawBody;
 
     if (!rawBody || !signature) {
-      this.logger.warn('Stripe webhook received without raw body or signature header');
-      throw new BadRequestException('Missing raw body or Stripe-Signature header');
+      this.logger.warn(
+        'Stripe webhook received without raw body or signature header',
+      );
+      throw new BadRequestException(
+        'Missing raw body or Stripe-Signature header',
+      );
     }
 
     const event = this.stripeService.constructEvent(rawBody, signature);
