@@ -9,8 +9,8 @@ import {
 } from 'class-validator';
 
 /**
- * Public self-service sign-up payload. Role is intentionally absent: every
- * self-registered account is a 'customer' (set by the handle_new_user trigger),
+ * Staff-created account payload. Role is intentionally absent: every
+ * account created here is a 'customer' (set by the handle_new_user trigger),
  * and the global ValidationPipe rejects any extra field such as `role`.
  */
 export class RegisterDto {
