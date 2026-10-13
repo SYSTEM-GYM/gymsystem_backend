@@ -41,6 +41,7 @@ type VariantRow = {
   products: {
     id: string;
     gym_id: string;
+    category_id: string | null;
     title: string;
     base_price: number;
     active: boolean;
@@ -58,6 +59,8 @@ type CouponRow = {
   starts_at: string;
   expires_at: string | null;
   active: boolean;
+  target_skus: string[];
+  target_categories: string[];
 };
 
 export const toCents = (value: number): number => Math.round(value * 100);
@@ -107,7 +110,7 @@ export class CatalogService {
       .select(
         `id, product_id, gym_id, size, color, model, sku, price_override,
          stock_quantity, active,
-         products ( id, gym_id, title, base_price, active )`,
+         products ( id, gym_id, category_id, title, base_price, active )`,
       )
       .in('id', variantIds);
 
@@ -119,6 +122,8 @@ export class CatalogService {
     const byId = new Map(rows.map((r) => [r.id, r]));
 
     const priced: PricedItem[] = [];
+    // Category per variant, needed for coupon targeting eligibility
+    const categoryByVariant = new Map<string, string | null>();
     let subtotalCents = 0;
 
     for (const [variantId, quantity] of quantities) {
@@ -143,6 +148,7 @@ export class CatalogService {
       const unitPriceCents = toCents(row.price_override ?? product.base_price);
       const totalPriceCents = unitPriceCents * quantity;
       subtotalCents += totalPriceCents;
+      categoryByVariant.set(variantId, product.category_id);
 
       priced.push({
         variantId,
@@ -166,10 +172,37 @@ export class CatalogService {
         couponCode.trim().toUpperCase(),
         subtotalCents,
       );
+
+      // Targeted coupons discount ONLY the eligible lines (by SKU or by
+      // product category). Empty targeting arrays = whole store.
+      const isTargeted =
+        coupon.target_skus.length > 0 || coupon.target_categories.length > 0;
+
+      const eligibleCents = isTargeted
+        ? priced.reduce((acc, item) => {
+            const categoryId = categoryByVariant.get(item.variantId) ?? null;
+            const matchesSku =
+              item.skuSnapshot !== null &&
+              coupon.target_skus.includes(item.skuSnapshot);
+            const matchesCategory =
+              categoryId !== null &&
+              coupon.target_categories.includes(categoryId);
+            return (
+              acc + (matchesSku || matchesCategory ? item.totalPriceCents : 0)
+            );
+          }, 0)
+        : subtotalCents;
+
+      if (isTargeted && eligibleCents === 0) {
+        throw new BadRequestException(
+          'Este cupom não se aplica aos itens do seu carrinho.',
+        );
+      }
+
       discountCents =
         coupon.discount_type === 'percentage'
-          ? Math.round((subtotalCents * toCents(coupon.discount_value)) / 10000)
-          : Math.min(subtotalCents, toCents(coupon.discount_value));
+          ? Math.round((eligibleCents * toCents(coupon.discount_value)) / 10000)
+          : Math.min(eligibleCents, toCents(coupon.discount_value));
       couponId = coupon.id;
       appliedCode = coupon.code;
     }
@@ -192,7 +225,7 @@ export class CatalogService {
     const { data } = await this.supabase
       .from('store_coupons')
       .select(
-        'id, code, discount_type, discount_value, min_order_amount, max_uses, used_count, starts_at, expires_at, active',
+        'id, code, discount_type, discount_value, min_order_amount, max_uses, used_count, starts_at, expires_at, active, target_skus, target_categories',
       )
       .eq('gym_id', gymId)
       .eq('code', code)

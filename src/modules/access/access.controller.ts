@@ -9,6 +9,9 @@ import {
 import { AccessService } from './access.service';
 import { ValidateAccessDto } from './dto/validate-access.dto';
 import { EdgeApiKeyGuard } from '../../shared/guards/edge-api-key.guard';
+import { JwtAuthGuard } from '../../shared/guards/jwt-auth.guard';
+import { RolesGuard } from '../../shared/guards/roles.guard';
+import { Roles } from '../../shared/decorators/roles.decorator';
 
 /**
  * POST /api/v1/access/validate
@@ -34,5 +37,19 @@ export class AccessController {
   @UseGuards(EdgeApiKeyGuard)
   async validate(@Body() dto: ValidateAccessDto) {
     return this.accessService.validate(dto);
+  }
+
+  /**
+   * POST /api/v1/access/unlock
+   *
+   * Manual turnstile release triggered by staff from the dashboard.
+   * Bridges to the local IoT controller registered in gym_hardware_settings.
+   */
+  @Post('unlock')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin', 'gym_admin', 'master', 'receptionist')
+  async manualUnlock() {
+    return this.accessService.manualUnlock();
   }
 }

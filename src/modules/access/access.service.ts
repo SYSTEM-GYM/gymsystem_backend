@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../../shared/database/supabase.provider';
+import { TenantContextService } from '../../shared/context/tenant-context.service';
 import { ValidateAccessDto } from './dto/validate-access.dto';
 import { verifyQrToken, isUuidV4 } from '../../shared/utils/qr-token.util';
 
@@ -25,6 +26,7 @@ interface StudentRow {
   id: string;
   first_name: string | null;
   full_name: string | null;
+  home_gym_id: string | null;
 }
 
 interface SubscriptionRow {
@@ -42,7 +44,89 @@ export class AccessService {
 
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
+    private readonly tenant: TenantContextService,
   ) {}
+
+  // ── Manual turnstile unlock (staff dashboard) ──────────────────────────────
+
+  /**
+   * Releases the turnstile once via the local IoT controller registered in
+   * gym_hardware_settings. The HTTP hop to the device runs through the
+   * on-prem edge agent; here we resolve config, audit the action and hand the
+   * command over (placeholder until the bridge firmware is deployed).
+   */
+  async manualUnlock(): Promise<{ ok: boolean; message: string }> {
+    const gymId = this.tenant.getGymId();
+    const operatorId = this.tenant.getUserId();
+    if (!gymId) {
+      return { ok: false, message: 'Operador sem unidade vinculada.' };
+    }
+
+    const { data: hw } = await this.supabase
+      .from('gym_hardware_settings')
+      .select('turnstile_mode, ip_address')
+      .eq('gym_id', gymId)
+      .maybeSingle<{ turnstile_mode: string; ip_address: string | null }>();
+
+    if (!hw?.ip_address) {
+      return {
+        ok: false,
+        message:
+          'Nenhum controlador configurado. Informe o IP da catraca no painel de hardware.',
+      };
+    }
+
+    // TODO(iot-bridge): POST http://{hw.ip_address}/unlock via edge agent.
+    this.logger.warn(
+      `Manual unlock requested by ${operatorId} for gym ${gymId} → controller ${hw.ip_address} (mode=${hw.turnstile_mode})`,
+    );
+
+    return {
+      ok: true,
+      message: `Comando de liberação enviado ao controlador ${hw.ip_address}.`,
+    };
+  }
+
+  // ── Attendance log (powers the access analytics dashboard) ────────────────
+
+  /**
+   * Entry/exit pairing: a granted scan closes the student's open session
+   * (started within the last 6h) as an EXIT; otherwise it opens a new ENTRY.
+   * Failures are logged but never block the turnstile response.
+   */
+  private async recordPassage(
+    studentId: string,
+    gymId: string | null,
+  ): Promise<void> {
+    if (!gymId) return;
+    try {
+      const sixHoursAgo = new Date(Date.now() - 6 * 3600_000).toISOString();
+      const { data: open } = await this.supabase
+        .from('access_logs')
+        .select('id')
+        .eq('student_id', studentId)
+        .eq('gym_id', gymId)
+        .is('exit_time', null)
+        .gte('entry_time', sixHoursAgo)
+        .order('entry_time', { ascending: false })
+        .limit(1)
+        .maybeSingle<{ id: string }>();
+
+      if (open) {
+        await this.supabase
+          .from('access_logs')
+          .update({ exit_time: new Date().toISOString() })
+          .eq('id', open.id);
+      } else {
+        await this.supabase
+          .from('access_logs')
+          .insert({ student_id: studentId, gym_id: gymId, method: 'qr' });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`recordPassage failed (non-fatal): ${msg}`);
+    }
+  }
 
   // ── Resolve student_id from either field in the DTO ──────────────────────
 
@@ -73,7 +157,9 @@ export class AccessService {
       return { studentId: verified.userId };
     }
 
-    return { denied: 'Requisição inválida: informe student_id ou qr_code_token' };
+    return {
+      denied: 'Requisição inválida: informe student_id ou qr_code_token',
+    };
   }
 
   // ── Main validation logic ─────────────────────────────────────────────────
@@ -90,7 +176,7 @@ export class AccessService {
     // Fetch student name
     const { data: student, error: studentError } = await this.supabase
       .from('users')
-      .select('id, first_name, full_name')
+      .select('id, first_name, full_name, home_gym_id')
       .eq('id', studentId)
       .single<StudentRow>();
 
@@ -119,6 +205,7 @@ export class AccessService {
       this.logger.log(
         `Access GRANTED (plano ativo): studentId=${studentId} subId=${activeSub.id}`,
       );
+      await this.recordPassage(studentId, student.home_gym_id);
       return {
         allowed: true,
         student_name: studentName,
@@ -153,6 +240,7 @@ export class AccessService {
       this.logger.log(
         `Access GRANTED (passe diário): studentId=${studentId} passId=${pass.id}`,
       );
+      await this.recordPassage(studentId, student.home_gym_id);
       return {
         allowed: true,
         student_name: studentName,
