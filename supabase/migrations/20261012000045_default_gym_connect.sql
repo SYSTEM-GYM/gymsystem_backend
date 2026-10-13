@@ -12,7 +12,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_gyms_single_default
   ON public.gyms ((is_default))
   WHERE is_default;
 
--- ── 2. Rename, flag as default and backfill users without a home gym ───────
+-- ── 2. Rename, flag as default and backfill customers without a home gym ───
 DO $$
 DECLARE
   target_gym_id UUID;
@@ -43,9 +43,12 @@ BEGIN
     SET is_default = true
     WHERE id = target_gym_id;
 
+  -- Customers only: staff/master accounts may be gym-less on purpose, and a
+  -- gym_id claim would grant them staff access via is_gym_staff()/is_gym_team().
   UPDATE public.users
     SET home_gym_id = target_gym_id
-    WHERE home_gym_id IS NULL;
+    WHERE home_gym_id IS NULL
+      AND role = 'customer';
 END;
 $$;
 
